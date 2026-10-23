@@ -20,6 +20,8 @@ import com.prahari.visitplan.ui.screens.AuditSelectScreen
 import com.prahari.visitplan.ui.screens.LoginScreen
 import com.prahari.visitplan.ui.screens.PlanDisplayScreen
 import com.prahari.visitplan.ui.theme.VisitPlanTheme
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 import java.text.SimpleDateFormat
@@ -105,8 +107,10 @@ fun VisitPlanApp(
                 }
 
                 // 2. Har center ka data: members + new members
+                // PARALLEL FETCH: saare centers ek saath (10-20x faster!)
+                // Pehle 1-1 karke fetch hota tha: 100 centers x 2 calls x 2 sec = ~7 min
+                // Ab parallel: saare ek saath = ~30 sec max
                 val asOnDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Calendar.getInstance().time)
-                val centerDataList = mutableListOf<CenterData>()
 
                 // Audit month se previous month nikalo
                 val auditCal = Calendar.getInstance()
@@ -118,54 +122,67 @@ fun VisitPlanApp(
                 val auditYear = auditCal.get(Calendar.YEAR)
                 val (prevMonth, prevYear) = PlanGenerator.getPreviousMonth(auditMonth, auditYear)
 
-                for ((idx, center) in centers.withIndex()) {
-                    loadingMsg = "Center ${idx + 1}/${centers.size}: ${center.centerName} ka data..."
-                    // Members
-                    val members = prahariApi.getMembers(center.centerId, asOnDate).getOrNull()
-                    val memberCount = members?.size ?: 0
+                loadingMsg = "Saare ${centers.size} centers ka data ek saath fetch ho raha hai..."
+                val centerDataList = mutableListOf<CenterData>()
+                var completedCount = 0
 
-                    // New members: disbursement date previous month me ho
-                    var newCount = 0
-                    val disb = prahariApi.getDisbursements(center.centerId, asOnDate).getOrNull()
-                    if (disb != null) {
-                        val arr = disb["disbursements"]?.jsonArray
-                            ?: disb["data"]?.jsonArray
-                            ?: disb["results"]?.jsonArray
-                        if (arr != null) {
-                            for (el in arr) {
-                                try {
-                                    val o = el.jsonObject
-                                    val dateStr = o["DISBURSEMENTDATE"]?.jsonPrimitive?.contentOrNull
-                                        ?: o["disbursement_date"]?.jsonPrimitive?.contentOrNull
-                                        ?: o["DISBURSED_DATE"]?.jsonPrimitive?.contentOrNull
-                                        ?: ""
-                                    if (dateStr.isNotEmpty()) {
-                                        // Date parse: yyyy-MM-dd ya dd-MM-yyyy
-                                        val parts = dateStr.split("-", "/", " ").filter { it.isNotEmpty() }
-                                        if (parts.size >= 2) {
-                                            // yyyy-MM-dd format: parts[1] = month
-                                            val m = parts[1].toIntOrNull()
-                                            val y = if (parts[0].length == 4) parts[0].toIntOrNull() else null
-                                            if (m == prevMonth && (y == null || y == prevYear)) {
-                                                newCount++
+                // Parallel: har center ke liye ek async task
+                // Batch size 20: ek saath 20 centers, phir agle 20 (server overload na ho)
+                val batchSize = 20
+                for (batch in centers.chunked(batchSize)) {
+                    val deferredList = batch.map { center ->
+                        async {
+                            // Members + Disbursements ek saath (dono parallel)
+                            val membersDeferred = async { prahariApi.getMembers(center.centerId, asOnDate).getOrNull() }
+                            val disbDeferred = async { prahariApi.getDisbursements(center.centerId, asOnDate).getOrNull() }
+                            val members = membersDeferred.await()
+                            val disb = disbDeferred.await()
+                            val memberCount = members?.size ?: 0
+
+                            // New members: disbursement date previous month me ho
+                            var newCount = 0
+                            if (disb != null) {
+                                val arr = disb["disbursements"]?.jsonArray
+                                    ?: disb["data"]?.jsonArray
+                                    ?: disb["results"]?.jsonArray
+                                if (arr != null) {
+                                    for (el in arr) {
+                                        try {
+                                            val o = el.jsonObject
+                                            val dateStr = o["DISBURSEMENTDATE"]?.jsonPrimitive?.contentOrNull
+                                                ?: o["disbursement_date"]?.jsonPrimitive?.contentOrNull
+                                                ?: o["DISBURSED_DATE"]?.jsonPrimitive?.contentOrNull
+                                                ?: ""
+                                            if (dateStr.isNotEmpty()) {
+                                                val parts = dateStr.split("-", "/", " ").filter { it.isNotEmpty() }
+                                                if (parts.size >= 2) {
+                                                    val m = parts[1].toIntOrNull()
+                                                    val y = if (parts[0].length == 4) parts[0].toIntOrNull() else null
+                                                    if (m == prevMonth && (y == null || y == prevYear)) {
+                                                        newCount++
+                                                    }
+                                                }
                                             }
-                                        }
+                                        } catch (_: Exception) {}
                                     }
-                                } catch (_: Exception) {}
+                                }
                             }
+
+                            val score = (newCount * 2) + memberCount
+                            CenterData(
+                                center = center,
+                                memberCount = memberCount,
+                                newMemberCount = newCount,
+                                score = score,
+                                meetingDay = center.meetingDay
+                            )
                         }
                     }
-
-                    val score = (newCount * 2) + memberCount
-                    centerDataList.add(
-                        CenterData(
-                            center = center,
-                            memberCount = memberCount,
-                            newMemberCount = newCount,
-                            score = score,
-                            meetingDay = center.meetingDay
-                        )
-                    )
+                    // Is batch ka wait karo, phir agla batch
+                    val batchResults = deferredList.awaitAll()
+                    centerDataList.addAll(batchResults)
+                    completedCount += batchResults.size
+                    loadingMsg = "$completedCount/${centers.size} centers ka data mil gaya..."
                 }
 
                 // 3. Plan generate karo
