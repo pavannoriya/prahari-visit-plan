@@ -8,16 +8,20 @@ import java.util.Calendar
 import java.util.Locale
 
 /**
- * Daily Visit Plan Generator
+ * Daily Visit Plan Generator — FINAL PLAN (user-confirmed 2026-10-23)
  *
- * Rules (user-finalized 2026-10-23):
- * 1. 1 staff per day only
- * 2. Saturday = working day BUT no center meetings (centers only Mon-Fri)
- * 3. Minimum target = working days x 4 (e.g. Mon-Sat 6 days -> 24 centers min)
- * 4. Daily count FLEXIBLE (some days 4, some 6-7)
- * 5. Staff diversity: in 5 visit days, at least 4 DIFFERENT staff
- * 6. New member = disbursement date in PREVIOUS month (of audit month)
- * 7. Score per center = (New Members x 2) + Members
+ * Rules:
+ * 1. 1 din = 1 staff STRICT (kabhi 2 staff mix nahi)
+ * 2. Centers ONLY Mon-Fri (Saturday ko meeting nahi)
+ * 3. Staff Score = (New members x 5) + (Centers x 6)
+ * 4. Diversity: 5 din me kam se kam 3 alag staff
+ *    - Jab tak 3 alag staff nahi hue: UNUSED staff me se highest score chuno
+ *    - 3 staff ho jane ke baad: overall highest score chuno (repeat chalega)
+ * 5. OD member = last collection 3 mahine se zyada pehle -> total members me count MAT karo
+ * 6. New member = disbursement previous month me hua
+ * 7. Meeting day = CenterMeetingDay field se
+ * 8. Plan me har din staff ka NAAM + ID saaf dikhega
+ * 9. Din-wise: Monday -> Tuesday -> Wednesday -> Thursday -> Friday
  */
 object PlanGenerator {
 
@@ -28,131 +32,83 @@ object PlanGenerator {
         val auditId: String,
         val auditName: String,
         val branchName: String,
-        val startDate: String, // yyyy-MM-dd
-        val endDate: String, // yyyy-MM-dd
-        val centers: List<CenterData>
+        val startDate: String,
+        val endDate: String,
+        // Day-wise centers: Map<DayName, List<CenterData>>
+        // Har din ke centers alag se (meeting day ke hisaab se)
+        val centersByDay: Map<String, List<CenterData>>
     )
 
+    /**
+     * Staff score nikalo: (New members x 5) + (Centers x 6)
+     */
+    fun calcStaffScore(centers: List<CenterData>): Int {
+        val totalNew = centers.sumOf { it.newMemberCount }
+        val totalCenters = centers.size
+        return (totalNew * 5) + (totalCenters * 6)
+    }
+
     fun generate(config: PlanConfig): VisitPlan {
-        // 1. Working days nikalo (Mon-Sat, Sunday excluded)
         val workingDays = getWorkingDays(config.startDate, config.endDate)
-
-        // 2. Visit days = Mon-Fri only (Saturday ko center nahi)
         val visitDays = workingDays.filter { it.dayOfWeek != Calendar.SATURDAY }
-
-        // 3. Minimum target = working days x 4
         val minTarget = workingDays.size * 4
 
-        // 4. Centers ko score ke hisaab se sort karo (high score pehle)
-        val sortedCenters = config.centers.sortedByDescending { it.score }
-
-        // 5. Staff-wise group karo
-        val staffGroups = sortedCenters.groupBy { it.center.staffName.ifEmpty { "Unknown" } }
-
-        // 6. Staff ko unke total score ke hisaab se sort karo
-        val sortedStaff = staffGroups.entries.sortedByDescending { entry ->
-            entry.value.sumOf { it.score }
-        }.map { it.key }
-
-        // 7. Din-wise plan banao
         val days = mutableListOf<DayPlan>()
-        val usedCenters = mutableSetOf<String>()
-        var staffIndex = 0
+        val usedStaff = mutableSetOf<String>() // Staff IDs jo use ho chuke
 
-        // Pehle har din ek alag staff do (diversity ke liye)
-        // Phir bache hue centers ko high-score order me baanto
-        for ((dayIdx, day) in visitDays.withIndex()) {
-            // Staff chunna: pehle 4-5 din me alag-alag staff, phir repeat
-            val staffName: String
-            if (dayIdx < sortedStaff.size && dayIdx < 5) {
-                // Pehle 5 din: har din naya staff (diversity)
-                staffName = sortedStaff[dayIdx]
-            } else {
-                // Baad ke din: round-robin
-                staffName = sortedStaff[staffIndex % sortedStaff.size]
-            }
-            staffIndex++
-
-            // Is staff ke centers (jo abhi use nahi hue)
-            val staffCenters = staffGroups[staffName]?.filter {
-                !usedCenters.contains(it.center.centerId)
-            } ?: emptyList()
-
-            // Aaj kitne centers? Flexible: baaki din aur baaki centers dekh ke
-            val remainingDays = visitDays.size - dayIdx
-            val remainingCenters = sortedCenters.count { !usedCenters.contains(it.center.centerId) }
-            val targetToday = if (remainingDays > 0) {
-                // Aaj ka target: baaki centers / baaki din, min 4, max 7
-                val avg = remainingCenters / remainingDays
-                avg.coerceIn(4, 7)
-            } else 4
-
-            // Is staff ke centers me se aaj ke liye chuno
-            // Priority: meeting day match kare to pehle, phir score
-            val todayCenters = mutableListOf<CenterData>()
+        for (day in visitDays) {
             val dayName = day.dayName
+            // Is din ke centers (meeting day match)
+            val dayCenters = config.centersByDay[dayName]
+                ?: config.centersByDay[dayName.lowercase()]
+                ?: emptyList()
 
-            // Pehle meeting-day-match wale
-            val matchingDay = staffCenters.filter {
-                it.meetingDay.equals(dayName, ignoreCase = true) ||
-                it.center.meetingDay.equals(dayName, ignoreCase = true)
+            if (dayCenters.isEmpty()) continue
+
+            // Staff-wise group karo
+            val staffGroups = dayCenters.groupBy { it.center.staffId.ifEmpty { it.center.staffName } }
+
+            // Har staff ka score nikalo
+            val staffScores = staffGroups.map { (staffKey, centers) ->
+                val staffName = centers.firstOrNull()?.center?.staffName ?: ""
+                val staffId = centers.firstOrNull()?.center?.staffId ?: staffKey
+                StaffScore(staffId, staffName, centers, calcStaffScore(centers))
             }.sortedByDescending { it.score }
 
-            // Phir baaki (score order)
-            val others = staffCenters.filter {
-                !matchingDay.contains(it)
-            }.sortedByDescending { it.score }
+            if (staffScores.isEmpty()) continue
 
-            for (c in matchingDay + others) {
-                if (todayCenters.size >= targetToday) break
-                todayCenters.add(c)
-                usedCenters.add(c.center.centerId)
-            }
-
-            // Agar is staff ke centers khatam ho gaye aur aaj ka target poora nahi hua,
-            // to dusre staff ke high-score centers le lo (lekin staff rule toot jayega)
-            // Isliye: agar staff ke centers kam hain, to aaj utne hi rakho
-            // (Better: kam centers, lekin 1-staff rule na toote)
-
-            if (todayCenters.isNotEmpty()) {
-                days.add(
-                    DayPlan(
-                        dayName = day.dayName,
-                        date = day.dateStr,
-                        staffName = staffName,
-                        staffId = todayCenters.firstOrNull()?.center?.staffId ?: "",
-                        centers = todayCenters,
-                        totalMembers = todayCenters.sumOf { it.memberCount },
-                        totalNewMembers = todayCenters.sumOf { it.newMemberCount },
-                        totalScore = todayCenters.sumOf { it.score }
-                    )
-                )
-            }
-        }
-
-        // 8. Agar min target poora nahi hua aur centers bache hain,
-        // to existing dinon me centers add karo (max 7 per day)
-        val totalPlanned = days.sumOf { it.centers.size }
-        if (totalPlanned < minTarget) {
-            val remaining = sortedCenters.filter { !usedCenters.contains(it.center.centerId) }
-            var remIdx = 0
-            for (day in days) {
-                if (remIdx >= remaining.size) break
-                val canAdd = 7 - day.centers.size
-                if (canAdd > 0) {
-                    val toAdd = remaining.subList(remIdx, minOf(remIdx + canAdd, remaining.size))
-                    val newCenters = day.centers + toAdd
-                    val idx = days.indexOf(day)
-                    days[idx] = day.copy(
-                        centers = newCenters,
-                        totalMembers = newCenters.sumOf { it.memberCount },
-                        totalNewMembers = newCenters.sumOf { it.newMemberCount },
-                        totalScore = newCenters.sumOf { it.score }
-                    )
-                    toAdd.forEach { usedCenters.add(it.center.centerId) }
-                    remIdx += toAdd.size
+            // Staff chuno: Diversity rule
+            val selected: StaffScore
+            if (usedStaff.size < 3) {
+                // Abhi 3 alag staff nahi hue: UNUSED me se highest score chuno
+                val unused = staffScores.filter { !usedStaff.contains(it.staffId) }
+                selected = if (unused.isNotEmpty()) {
+                    unused.first() // Highest score among unused (already sorted)
+                } else {
+                    staffScores.first() // Sab use ho chuke, to highest score
                 }
+            } else {
+                // 3 staff ho gaye: overall highest score chuno (repeat chalega)
+                selected = staffScores.first()
             }
+
+            usedStaff.add(selected.staffId)
+
+            // Is staff ke centers (score order me)
+            val selectedCenters = selected.centers.sortedByDescending { it.score }
+
+            days.add(
+                DayPlan(
+                    dayName = day.dayName,
+                    date = day.dateStr,
+                    staffName = selected.staffName,
+                    staffId = selected.staffId,
+                    centers = selectedCenters,
+                    totalMembers = selectedCenters.sumOf { it.memberCount },
+                    totalNewMembers = selectedCenters.sumOf { it.newMemberCount },
+                    totalScore = selected.score
+                )
+            )
         }
 
         val allPlannedCenters = days.flatMap { it.centers }
@@ -166,10 +122,17 @@ object PlanGenerator {
             totalCenters = allPlannedCenters.size,
             totalMembers = allPlannedCenters.sumOf { it.memberCount },
             totalNewMembers = allPlannedCenters.sumOf { it.newMemberCount },
-            totalScore = allPlannedCenters.sumOf { it.score },
-            staffCovered = days.map { it.staffName }.distinct()
+            totalScore = days.sumOf { it.totalScore },
+            staffCovered = days.map { "${it.staffName} (${it.staffId})" }.distinct()
         )
     }
+
+    private data class StaffScore(
+        val staffId: String,
+        val staffName: String,
+        val centers: List<CenterData>,
+        val score: Int
+    )
 
     data class WorkingDay(
         val dateStr: String,
@@ -186,7 +149,6 @@ object PlanGenerator {
             cal.time = start
             while (!cal.time.after(end)) {
                 val dow = cal.get(Calendar.DAY_OF_WEEK)
-                // Sunday excluded
                 if (dow != Calendar.SUNDAY) {
                     days.add(
                         WorkingDay(
@@ -203,15 +165,38 @@ object PlanGenerator {
         return days
     }
 
-    /**
-     * Previous month nikalo (audit month se)
-     * e.g. audit Oct 2026 -> previous month = Sep 2026 (month=9, year=2026)
-     */
     fun getPreviousMonth(auditMonth: Int, auditYear: Int): Pair<Int, Int> {
         return if (auditMonth == 1) {
             Pair(12, auditYear - 1)
         } else {
             Pair(auditMonth - 1, auditYear)
+        }
+    }
+
+    /**
+     * Check karo ki member OD hai ya nahi
+     * OD = last collection 3 mahine (90 din) se zyada pehle
+     */
+    fun isODMember(lastCollectionDateStr: String, todayCal: Calendar = Calendar.getInstance()): Boolean {
+        if (lastCollectionDateStr.isEmpty()) return false
+        try {
+            // Date formats: yyyy-MM-dd, dd-MM-yyyy, yyyy-MM-dd HH:mm:ss
+            val datePart = lastCollectionDateStr.split(" ")[0]
+            val parts = datePart.split("-", "/")
+            if (parts.size < 3) return false
+            val cal = Calendar.getInstance()
+            if (parts[0].length == 4) {
+                // yyyy-MM-dd
+                cal.set(parts[0].toInt(), parts[1].toInt() - 1, parts[2].toInt())
+            } else {
+                // dd-MM-yyyy
+                cal.set(parts[2].toInt(), parts[1].toInt() - 1, parts[0].toInt())
+            }
+            val diffMs = todayCal.timeInMillis - cal.timeInMillis
+            val diffDays = diffMs / (1000 * 60 * 60 * 24)
+            return diffDays > 90
+        } catch (_: Exception) {
+            return false
         }
     }
 }
