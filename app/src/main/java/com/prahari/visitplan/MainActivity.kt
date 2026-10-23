@@ -250,7 +250,7 @@ fun VisitPlanApp(
                 isOptimizing = true
                 val workingDays = PlanGenerator.getWorkingDays(audit.startDate, audit.endDate)
                 val minTarget = workingDays.size * 4
-                val opt = geminiApi.optimizePlan(generated.days, centerDataList, audit.name, minTarget)
+                val opt = geminiApi.optimizePlan(generated.days, centersByDay.values.flatten(), audit.name, minTarget)
                 isOptimizing = false
                 if (opt.isSuccess) {
                     val o = opt.getOrNull()
