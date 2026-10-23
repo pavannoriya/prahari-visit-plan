@@ -185,7 +185,10 @@ fun VisitPlanApp(
                                 }
 
                                 // NEW MEMBERS: disbursement previous month me hua
+                                // STAFF INFO: disbursement se nikalo (center API me staff nahi hota!)
                                 var newCount = 0
+                                var disbStaffId = ""
+                                var disbStaffName = ""
                                 if (disb != null) {
                                     val arr = disb["disbursements"]?.jsonArray
                                         ?: disb["data"]?.jsonArray
@@ -194,6 +197,17 @@ fun VisitPlanApp(
                                         for (el in arr) {
                                             try {
                                                 val o = el.jsonObject
+                                                // Staff info pehle record se le lo (sabka same staff hota hai)
+                                                if (disbStaffId.isEmpty()) {
+                                                    disbStaffId = o["STAFFID"]?.jsonPrimitive?.contentOrNull
+                                                        ?: o["staff_id"]?.jsonPrimitive?.contentOrNull
+                                                        ?: o["StaffID"]?.jsonPrimitive?.contentOrNull
+                                                        ?: ""
+                                                    disbStaffName = o["STAFFNAME"]?.jsonPrimitive?.contentOrNull
+                                                        ?: o["staff_name"]?.jsonPrimitive?.contentOrNull
+                                                        ?: o["StaffName"]?.jsonPrimitive?.contentOrNull
+                                                        ?: ""
+                                                }
                                                 val dateStr = o["DISBURSEMENTDATE"]?.jsonPrimitive?.contentOrNull
                                                     ?: o["disbursement_date"]?.jsonPrimitive?.contentOrNull
                                                     ?: o["DISBURSED_DATE"]?.jsonPrimitive?.contentOrNull
@@ -213,10 +227,20 @@ fun VisitPlanApp(
                                     }
                                 }
 
+                                // Staff fix: center API me staff nahi hai to disbursement se lo
+                                // Agar dono me nahi hai to center code se ek unique staff banao (taaki sab "Unknown" me na group hon)
+                                val finalStaffId = center.staffId.ifEmpty { disbStaffId }
+                                val finalStaffName = center.staffName.ifEmpty { disbStaffName }
+                                val centerWithStaff = if (finalStaffId != center.staffId || finalStaffName != center.staffName) {
+                                    center.copy(staffId = finalStaffId, staffName = finalStaffName)
+                                } else {
+                                    center
+                                }
+
                                 // Center score (display ke liye): (New x 5) + 6 (center ka apna)
                                 val centerScore = (newCount * 5) + 6
                                 CenterData(
-                                    center = center,
+                                    center = centerWithStaff,
                                     memberCount = validMemberCount, // OD hatake!
                                     newMemberCount = newCount,
                                     score = centerScore,
