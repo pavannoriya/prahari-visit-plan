@@ -30,7 +30,7 @@ class GeminiApi(private val secureStorage: SecureStorage) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val mediaType = "application/json; charset=utf-8".toMediaType()
 
-    private fun apiKey(): String =
+    private suspend fun apiKey(): String =
         secureStorage.getGeminiKey() ?: throw IllegalStateException("Gemini API key set nahi hai")
 
     private suspend fun generateContent(prompt: String): Result<String> = withContext(Dispatchers.IO) {
