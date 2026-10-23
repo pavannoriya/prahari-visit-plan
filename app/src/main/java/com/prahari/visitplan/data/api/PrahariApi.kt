@@ -211,7 +211,7 @@ class PrahariApi(private val secureStorage: SecureStorage) {
         return r.map { obj ->
             obj["customer_risks"]?.jsonArray
                 ?: obj["customers"]?.jsonArray
-                ?: emptyList()
+                ?: JsonArray(emptyList())
         }
     }
 
