@@ -22,6 +22,7 @@ import com.prahari.visitplan.ui.screens.PlanDisplayScreen
 import com.prahari.visitplan.ui.theme.VisitPlanTheme
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 import java.text.SimpleDateFormat
@@ -107,9 +108,11 @@ fun VisitPlanApp(
                 }
 
                 // 2. Har center ka data: members + new members
-                // PARALLEL FETCH: saare centers ek saath (10-20x faster!)
+                // SAFE PARALLEL FETCH: batch me, rate limit se bachne ke liye
                 // Pehle 1-1 karke fetch hota tha: 100 centers x 2 calls x 2 sec = ~7 min
-                // Ab parallel: saare ek saath = ~30 sec max
+                // Batch 5 + 1 sec delay: 100 centers = ~60-90 sec, API block nahi hoga
+                // NOTE: Zyada parallel request (20+) se Prahari API rate limit/block kar sakta hai!
+                // Isliye batch size 5 rakha hai + har batch ke baad 1 sec ka gap
                 val asOnDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Calendar.getInstance().time)
 
                 // Audit month se previous month nikalo
@@ -122,14 +125,18 @@ fun VisitPlanApp(
                 val auditYear = auditCal.get(Calendar.YEAR)
                 val (prevMonth, prevYear) = PlanGenerator.getPreviousMonth(auditMonth, auditYear)
 
-                loadingMsg = "Saare ${centers.size} centers ka data ek saath fetch ho raha hai..."
+                loadingMsg = "Centers ka data fetch ho raha hai (safe speed)..."
                 val centerDataList = mutableListOf<CenterData>()
                 var completedCount = 0
 
-                // Parallel: har center ke liye ek async task
-                // Batch size 20: ek saath 20 centers, phir agle 20 (server overload na ho)
-                val batchSize = 20
-                for (batch in centers.chunked(batchSize)) {
+                // SAFE Parallel: ek saath sirf 5 centers, har batch ke baad 1 sec gap
+                // Isse API rate limit nahi lagega, phir bhi 1-1 se 5x faster
+                val batchSize = 5
+                for ((batchIdx, batch) in centers.chunked(batchSize).withIndex()) {
+                    // Har batch ke baad 1 sec gap (pehle batch ke baad se)
+                    if (batchIdx > 0) {
+                        kotlinx.coroutines.delay(1000)
+                    }
                     val deferredList = batch.map { center ->
                         async {
                             // Members + Disbursements ek saath (dono parallel)
