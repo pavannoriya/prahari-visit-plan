@@ -66,7 +66,18 @@ object PlanGenerator {
             if (dayCenters.isEmpty()) continue
 
             // Staff-wise group karo
-            val staffGroups = dayCenters.groupBy { it.center.staffId.ifEmpty { it.center.staffName } }
+            // FALLBACK: agar staffId khali hai to center code ke prefix se group karo
+            // (taaki sab "Unknown" me na group hon)
+            val staffGroups = dayCenters.groupBy { cd ->
+                val sid = cd.center.staffId.ifEmpty { cd.center.staffName }
+                if (sid.isNotEmpty()) {
+                    sid
+                } else {
+                    // Staff nahi hai to center code ka pehla hissa use karo (e.g., NER:RRL:02:320 -> NER)
+                    // Ya center code hi use karo taaki har center alag group me aaye
+                    "STAFF_${cd.center.centerCode}"
+                }
+            }
 
             // Har staff ka score nikalo
             val staffScores = staffGroups.map { (staffKey, centers) ->
