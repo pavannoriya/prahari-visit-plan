@@ -148,7 +148,9 @@ fun PlanDisplayScreen(
             Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text("${day.dayName} (${day.date})", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    Text("👤 Staff: ${day.staffName} | ${day.centers.size} centers | ${day.totalMembers} members | ${day.totalNewMembers} new | Score: ${day.totalScore}")
+                    // Staff NAAM + ID saaf dikhega
+                    Text("👤 Staff: ${day.staffName} (ID: ${day.staffId})", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                    Text("${day.centers.size} centers | ${day.totalMembers} members (OD hatake) | ${day.totalNewMembers} new | Staff Score: ${day.totalScore}")
                     Spacer(Modifier.height(4.dp))
                     day.centers.forEach { c ->
                         Text("  • ${c.center.centerName} (${c.center.centerCode}) — ${c.memberCount} members, ${c.newMemberCount} new, Score: ${c.score}")
